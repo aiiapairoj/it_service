@@ -1,38 +1,157 @@
+คู่มือการติดตั้งระบบ IT Service Portal (Complete Edition)
+
+1. โครงสร้างไฟล์ (File Structure)
+
+กรุณาสร้างไฟล์ตามโครงสร้างนี้ในโฟลเดอร์ Web Server ของคุณ (เช่น htdocs/it_service):
+
+it_service/
+├── api/
+│   ├── save_ticket.php     (API: แจ้งซ่อมใหม่)
+│   └── update_ticket.php   (API: อัปเดตสถานะ - สำหรับเจ้าหน้าที่)
+├── db_connect.php          (Config: เชื่อมต่อฐานข้อมูล)
+├── index.php               (Frontend: หน้าจอหลักรวมทุกฟังก์ชัน)
+└── database.sql            (Database: โครงสร้างตาราง)
+
+
+2. ฐานข้อมูล (database.sql)
+
+Run คำสั่ง SQL นี้ใน phpMyAdmin:
+
+CREATE DATABASE IF NOT EXISTS it_service_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE it_service_db;
+
+CREATE TABLE IF NOT EXISTS tickets (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    ticket_no VARCHAR(20) NOT NULL,
+    subject VARCHAR(255) NOT NULL,
+    department VARCHAR(50) NOT NULL,
+    category VARCHAR(50) NOT NULL,
+    details TEXT,
+    priority ENUM('low', 'medium', 'high') DEFAULT 'medium',
+    status ENUM('pending', 'in_progress', 'approved', 'completed') DEFAULT 'pending',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+-- ข้อมูลทดสอบ
+INSERT INTO tickets (ticket_no, subject, department, category, priority, status, created_at) VALUES
+('TK-2309001', 'Printer กระดาษติด', 'ACC', 'Printer', 'medium', 'pending', NOW()),
+('TK-2309002', 'WiFi ชั้น 3 ใช้งานไม่ได้', 'IT', 'Network', 'high', 'in_progress', NOW());
+
+
+3. การเชื่อมต่อฐานข้อมูล (db_connect.php)
+
 <?php
-// PHP BLOCK START: Database Connection and Data Fetching
-// NOTE: Make sure db_connect.php is available in the root folder.
+$servername = "localhost";
+$username = "root";        // แก้ไข username ของคุณ
+$password = "";            // แก้ไข password ของคุณ
+$dbname = "it_service_db";
+
+try {
+    $conn = new PDO("mysql:host=$servername;dbname=$dbname;charset=utf8", $username, $password);
+    $conn->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+} catch(PDOException $e) {
+    die("Connection failed: " . $e->getMessage());
+}
+?>
+
+
+4. API (Backend Logic)
+
+4.1 บันทึกการแจ้งซ่อม (api/save_ticket.php)
+
+<?php
+header('Content-Type: application/json');
+require_once '../db_connect.php';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    try {
+        $data = json_decode(file_get_contents('php://input'), true);
+        
+        // Generate ID: TK-YYMMxxx
+        $ym = date('ym');
+        $stmt = $conn->query("SELECT COUNT(*) FROM tickets WHERE ticket_no LIKE 'TK-$ym%'");
+        $count = $stmt->fetchColumn();
+        $ticketNo = "TK-$ym" . str_pad($count + 1, 3, '0', STR_PAD_LEFT);
+
+        $sql = "INSERT INTO tickets (ticket_no, subject, department, category, priority, details, status) 
+                VALUES (:t_no, :subj, :dept, :cat, :prio, :det, 'pending')";
+        
+        $stmt = $conn->prepare($sql);
+        $stmt->execute([
+            ':t_no' => $ticketNo,
+            ':subj' => $data['subject'],
+            ':dept' => $data['department'],
+            ':cat' => $data['category'],
+            ':prio' => $data['priority'],
+            ':det' => $data['details']
+        ]);
+
+        echo json_encode(['success' => true, 'message' => 'บันทึกข้อมูลสำเร็จ']);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+    }
+}
+?>
+
+
+4.2 อัปเดตสถานะ (api/update_ticket.php)
+
+ไฟล์ใหม่: ใช้สำหรับเปลี่ยนสถานะงานซ่อม
+
+<?php
+header('Content-Type: application/json');
+require_once '../db_connect.php';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    try {
+        $data = json_decode(file_get_contents('php://input'), true);
+        
+        $sql = "UPDATE tickets SET status = :status WHERE id = :id";
+        $stmt = $conn->prepare($sql);
+        $stmt->execute([
+            ':status' => $data['status'],
+            ':id' => $data['id']
+        ]);
+
+        echo json_encode(['success' => true]);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+    }
+}
+?>
+
+
+5. หน้าจอหลัก (index.php)
+
+โค้ดฉบับเต็ม: รวม PHP Fetch Data และ UI ทั้งหมด
+
+<?php
 require_once 'db_connect.php';
 
 // 1. ดึง Stats
-try {
-    $stats = [
-        'total' => $conn->query("SELECT COUNT(*) FROM tickets WHERE MONTH(created_at) = MONTH(CURRENT_DATE())")->fetchColumn(),
-        'pending' => $conn->query("SELECT COUNT(*) FROM tickets WHERE status = 'pending'")->fetchColumn(),
-        'inprogress' => $conn->query("SELECT COUNT(*) FROM tickets WHERE status = 'in_progress'")->fetchColumn(),
-        'completed' => $conn->query("SELECT COUNT(*) FROM tickets WHERE status = 'completed'")->fetchColumn()
-    ];
+$stats = [
+    'total' => $conn->query("SELECT COUNT(*) FROM tickets WHERE MONTH(created_at) = MONTH(CURRENT_DATE())")->fetchColumn(),
+    'pending' => $conn->query("SELECT COUNT(*) FROM tickets WHERE status IN ('pending')")->fetchColumn(),
+    'inprogress' => $conn->query("SELECT COUNT(*) FROM tickets WHERE status = 'in_progress'")->fetchColumn(),
+    'completed' => $conn->query("SELECT COUNT(*) FROM tickets WHERE status = 'completed'")->fetchColumn()
+];
 
-    // 2. ดึงรายการทั้งหมด (สำหรับหน้า My Tickets และ Manage)
-    $stmt = $conn->query("SELECT * FROM tickets ORDER BY created_at DESC");
-    $allTickets = $stmt->fetchAll(PDO::FETCH_ASSOC);
+// 2. ดึงรายการทั้งหมด (สำหรับหน้า My Tickets และ Manage)
+$stmt = $conn->query("SELECT * FROM tickets ORDER BY created_at DESC");
+$allTickets = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    // 3. ดึงข้อมูลกราฟ (7 วันย้อนหลัง)
-    $chartDataNew = [];
-    $chartDates = [];
-    for ($i = 6; $i >= 0; $i--) {
-        $date = date('Y-m-d', strtotime("-$i days"));
-        $chartDates[] = date('d/m', strtotime($date));
-        $stmt = $conn->prepare("SELECT COUNT(*) FROM tickets WHERE DATE(created_at) = ?");
-        $stmt->execute([$date]);
-        $chartDataNew[] = $stmt->fetchColumn();
-    }
-} catch (Exception $e) {
-    // ใน Production ควร log error และแสดงข้อความที่เป็นมิตรต่อผู้ใช้
-    error_log("Database error on index.php: " . $e->getMessage());
-    $stats = ['total' => 0, 'pending' => 0, 'inprogress' => 0, 'completed' => 0];
-    $allTickets = [];
-    $chartDataNew = [0,0,0,0,0,0,0];
-    $chartDates = ['N/A', 'N/A', 'N/A', 'N/A', 'N/A', 'N/A', 'N/A'];
+// 3. ดึงข้อมูลกราฟ (7 วันย้อนหลัง)
+$chartDataNew = [];
+$chartDates = [];
+for ($i = 6; $i >= 0; $i--) {
+    $date = date('Y-m-d', strtotime("-$i days"));
+    $chartDates[] = date('d/m', strtotime($date));
+    $stmt = $conn->prepare("SELECT COUNT(*) FROM tickets WHERE DATE(created_at) = ?");
+    $stmt->execute([$date]);
+    $chartDataNew[] = $stmt->fetchColumn();
 }
 
 // Helper Function: แสดงสถานะสวยงาม
@@ -52,22 +171,16 @@ function getStatusBadge($status) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>IT Service Portal</title>
-    <!-- Load Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <!-- Load ApexCharts for graphs -->
-    <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+    <script src="[https://cdn.tailwindcss.com](https://cdn.tailwindcss.com)"></script>
+    <link href="[https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600&display=swap](https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600&display=swap)" rel="stylesheet">
+    <link rel="stylesheet" href="[https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css](https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css)">
+    <script src="[https://cdn.jsdelivr.net/npm/apexcharts](https://cdn.jsdelivr.net/npm/apexcharts)"></script>
     <script>
         tailwind.config = {
-            theme: { extend: { fontFamily: { sans: ['Prompt', 'sans-serif'] }, colors: { brand: { 50: '#f0f9ff', 500: '#0ea5e9', 600: '#0284c7' } } } }
+            theme: { extend: { fontFamily: { sans: ['Prompt', 'sans-serif'] }, colors: { brand: { 500: '#0ea5e9', 600: '#0284c7' } } } }
         }
     </script>
-    <style>
-        .fade-in { animation: fadeIn 0.3s ease-in-out; } 
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
-        .toast-show { transform: translate(0, 0) !important; opacity: 1 !important; }
-    </style>
+    <style>.fade-in { animation: fadeIn 0.3s ease-in-out; } @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }</style>
 </head>
 <body class="bg-slate-50 text-slate-800 h-screen flex overflow-hidden">
 
@@ -210,9 +323,9 @@ function getStatusBadge($status) {
                             <tbody class="divide-y divide-slate-100">
                                 <?php foreach ($allTickets as $ticket): ?>
                                 <tr>
-                                    <td class="px-6 py-4 font-medium"><?php echo htmlspecialchars($ticket['ticket_no']); ?></td>
-                                    <td class="px-6 py-4"><?php echo htmlspecialchars($ticket['subject']); ?></td>
-                                    <td class="px-6 py-4"><?php echo htmlspecialchars($ticket['department']); ?></td>
+                                    <td class="px-6 py-4 font-medium"><?php echo $ticket['ticket_no']; ?></td>
+                                    <td class="px-6 py-4"><?php echo $ticket['subject']; ?></td>
+                                    <td class="px-6 py-4"><?php echo $ticket['department']; ?></td>
                                     <td class="px-6 py-4 text-slate-500"><?php echo date('d/m/Y H:i', strtotime($ticket['created_at'])); ?></td>
                                     <td class="px-6 py-4"><?php echo getStatusBadge($ticket['status']); ?></td>
                                 </tr>
@@ -245,15 +358,13 @@ function getStatusBadge($status) {
                             <tbody class="divide-y divide-slate-100">
                                 <?php foreach ($allTickets as $ticket): ?>
                                 <tr id="row-<?php echo $ticket['id']; ?>">
-                                    <td class="px-6 py-4 font-medium"><?php echo htmlspecialchars($ticket['ticket_no']); ?></td>
-                                    <td class="px-6 py-4"><?php echo htmlspecialchars($ticket['subject']); ?></td>
+                                    <td class="px-6 py-4 font-medium"><?php echo $ticket['ticket_no']; ?></td>
+                                    <td class="px-6 py-4"><?php echo $ticket['subject']; ?></td>
                                     <td class="px-6 py-4 status-cell"><?php echo getStatusBadge($ticket['status']); ?></td>
                                     <td class="px-6 py-4">
-                                        <select onchange="handleUpdateStatus(<?php echo $ticket['id']; ?>, this.value)" 
-                                                class="border border-slate-300 rounded px-2 py-1 text-xs focus:ring-2 focus:ring-brand-500">
+                                        <select onchange="updateStatus(<?php echo $ticket['id']; ?>, this.value)" class="border border-slate-300 rounded px-2 py-1 text-xs focus:ring-2 focus:ring-brand-500">
                                             <option value="pending" <?php echo $ticket['status']=='pending'?'selected':''; ?>>รอ</option>
                                             <option value="in_progress" <?php echo $ticket['status']=='in_progress'?'selected':''; ?>>กำลังซ่อม</option>
-                                            <option value="approved" <?php echo $ticket['status']=='approved'?'selected':''; ?>>อนุมัติแล้ว</option>
                                             <option value="completed" <?php echo $ticket['status']=='completed'?'selected':''; ?>>เสร็จสิ้น</option>
                                         </select>
                                     </td>
@@ -268,117 +379,8 @@ function getStatusBadge($status) {
         </div>
     </main>
 
-    <!-- Global Components: Toast and Modal -->
-
-    <!-- 1. Custom Modal for Confirmation/Alerts -->
-    <div id="customModal" class="fixed inset-0 bg-slate-900 bg-opacity-70 hidden z-50 items-center justify-center transition-opacity duration-300 opacity-0">
-        <div class="bg-white p-8 rounded-xl shadow-2xl max-w-sm w-full transform transition-all duration-300 scale-90">
-            <h4 id="modalTitle" class="text-xl font-bold text-slate-800 mb-4"></h4>
-            <p id="modalMessage" class="text-slate-600 mb-6"></p>
-            <div id="modalActions" class="flex justify-end gap-3">
-                <button id="modalCancel" class="px-4 py-2 border rounded-xl text-slate-600 font-medium hover:bg-slate-50 transition-colors">ยกเลิก</button>
-                <button id="modalConfirm" class="px-4 py-2 bg-brand-600 text-white rounded-xl font-medium hover:bg-brand-700 transition-colors shadow-md shadow-brand-500/30">ยืนยัน</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- 2. Toast Notification -->
-    <div id="toast" class="fixed bottom-6 right-6 bg-slate-800 text-white px-6 py-4 rounded-xl shadow-2xl transform translate-x-full opacity-0 transition-all duration-500 flex items-center gap-4 z-50 border border-slate-700">
-        <div id="toastIcon" class="w-8 h-8 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center">
-            <i class="fa-solid fa-check"></i>
-        </div>
-        <div>
-            <h4 id="toastTitle" class="font-semibold text-sm">สำเร็จ!</h4>
-            <p id="toastMessage" class="text-xs text-slate-400">บันทึกข้อมูลเข้าระบบเรียบร้อยแล้ว</p>
-        </div>
-    </div>
-
     <!-- Scripts -->
     <script>
-        // --- Custom UI Functions (Replacing alert/confirm) ---
-        function showToast(type, title, message) {
-            const toast = document.getElementById('toast');
-            const icon = document.getElementById('toastIcon');
-            const titleEl = document.getElementById('toastTitle');
-            const messageEl = document.getElementById('toastMessage');
-
-            // Reset classes
-            icon.className = 'w-8 h-8 rounded-full flex items-center justify-center';
-
-            if (type === 'success') {
-                icon.classList.add('bg-emerald-500/20', 'text-emerald-400');
-                icon.innerHTML = '<i class="fa-solid fa-check"></i>';
-            } else if (type === 'error') {
-                icon.classList.add('bg-red-500/20', 'text-red-400');
-                icon.innerHTML = '<i class="fa-solid fa-xmark"></i>';
-            }
-
-            titleEl.innerText = title;
-            messageEl.innerText = message;
-            
-            // Show toast
-            toast.classList.add('toast-show');
-
-            // Hide after 4 seconds
-            setTimeout(() => {
-                toast.classList.remove('toast-show');
-            }, 4000);
-        }
-
-        /**
-         * Shows a confirmation modal.
-         * @param {string} title - The modal title.
-         * @param {string} message - The modal message.
-         * @returns {Promise<boolean>} Resolves true if confirmed, false if cancelled.
-         */
-        function showConfirm(title, message) {
-            return new Promise((resolve) => {
-                const modal = document.getElementById('customModal');
-                document.getElementById('modalTitle').innerText = title;
-                document.getElementById('modalMessage').innerText = message;
-                
-                // Show modal
-                modal.classList.remove('hidden');
-                setTimeout(() => { 
-                    modal.classList.add('opacity-100');
-                    modal.querySelector('.transform').classList.remove('scale-90');
-                }, 10);
-
-                const confirmAction = () => {
-                    closeModal();
-                    resolve(true);
-                    cleanupListeners();
-                };
-
-                const cancelAction = () => {
-                    closeModal();
-                    resolve(false);
-                    cleanupListeners();
-                };
-
-                const closeModal = () => {
-                    modal.classList.remove('opacity-100');
-                    modal.querySelector('.transform').classList.add('scale-90');
-                    setTimeout(() => { modal.classList.add('hidden'); }, 300);
-                };
-
-                const confirmButton = document.getElementById('modalConfirm');
-                const cancelButton = document.getElementById('modalCancel');
-
-                // Attach temporary listeners
-                confirmButton.addEventListener('click', confirmAction);
-                cancelButton.addEventListener('click', cancelAction);
-
-                // Cleanup function
-                const cleanupListeners = () => {
-                    confirmButton.removeEventListener('click', confirmAction);
-                    cancelButton.removeEventListener('click', cancelAction);
-                };
-            });
-        }
-        
-        // --- Core App Logic ---
-
         // 1. Switch Pages
         function switchPage(pageId) {
             document.querySelectorAll('.page-content').forEach(el => el.classList.add('hidden'));
@@ -402,52 +404,33 @@ function getStatusBadge($status) {
             const formData = new FormData(e.target);
             const data = Object.fromEntries(formData.entries());
             
-            const confirmed = await showConfirm('ยืนยันการแจ้งซ่อม', 'คุณต้องการส่งใบแจ้งซ่อมนี้เข้าสู่ระบบหรือไม่?');
-            
-            if (confirmed) {
+            if(confirm('ยืนยันการแจ้งซ่อม?')) {
                 try {
                     const res = await fetch('api/save_ticket.php', {
                         method: 'POST', headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify(data)
                     });
                     const result = await res.json();
-                    
-                    if(result.success) { 
-                        showToast('success', 'บันทึกสำเร็จ!', 'ระบบได้บันทึกใบแจ้งซ่อมของคุณเรียบร้อยแล้ว');
-                        // Use a short delay before reloading to allow the user to see the toast
-                        setTimeout(() => window.location.reload(), 1000); 
-                    }
-                    else { 
-                        showToast('error', 'บันทึกไม่สำเร็จ', 'Error: ' + result.message);
-                    }
-                } catch(err) { 
-                    showToast('error', 'การเชื่อมต่อผิดพลาด', 'ไม่สามารถเชื่อมต่อ Server ได้');
-                }
+                    if(result.success) { alert('บันทึกสำเร็จ!'); window.location.reload(); }
+                    else { alert('Error: ' + result.message); }
+                } catch(err) { alert('เชื่อมต่อ Server ไม่ได้'); }
             }
         }
 
         // 3. Update Status (Admin)
-        async function handleUpdateStatus(id, newStatus) {
-            const confirmed = await showConfirm('ยืนยันการเปลี่ยนสถานะ', `คุณต้องการเปลี่ยนสถานะใบงาน ${id} เป็น ${newStatus} หรือไม่?`);
-            
-            if (confirmed) {
-                try {
-                    const res = await fetch('api/update_ticket.php', {
-                        method: 'POST', headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ id: id, status: newStatus })
-                    });
-                    const result = await res.json();
-                    
-                    if(result.success) {
-                        showToast('success', 'อัปเดตสำเร็จ!', 'สถานะงานซ่อมถูกบันทึกเรียบร้อย');
-                        setTimeout(() => window.location.reload(), 1000); 
-                    } else { 
-                        showToast('error', 'อัปเดตไม่สำเร็จ', 'ไม่สามารถเปลี่ยนสถานะได้');
-                    }
-                } catch(err) { 
-                    showToast('error', 'การเชื่อมต่อผิดพลาด', 'ไม่สามารถเชื่อมต่อ Server ได้');
-                }
-            }
+        async function updateStatus(id, newStatus) {
+            try {
+                const res = await fetch('api/update_ticket.php', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ id: id, status: newStatus })
+                });
+                const result = await res.json();
+                if(result.success) {
+                    // Update UI badge without reload
+                    /* Reloading is safer to see changes everywhere, but let's reload for simplicity */
+                    window.location.reload();
+                } else { alert('Update failed'); }
+            } catch(err) { alert('Connection failed'); }
         }
 
         // 4. Init Chart
@@ -459,15 +442,8 @@ function getStatusBadge($status) {
                 xaxis: { categories: <?php echo json_encode($chartDates); ?> },
                 fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.7, opacityTo: 0.2 } }
             };
-            // Check if chart element exists before rendering
-            const chartElement = document.querySelector("#activityChart");
-            if (chartElement) {
-                new ApexCharts(chartElement, options).render();
-            }
+            new ApexCharts(document.querySelector("#activityChart"), options).render();
         });
-
-        // Set initial page
-        switchPage('dashboard');
     </script>
 </body>
 </html>
